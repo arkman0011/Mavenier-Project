@@ -18,13 +18,24 @@ Intent = Literal[
     "comparison",
     "general_technical_question",
 ]
+class ExtractedEntity(BaseModel):
+    """One entity explicitly found in the question."""
 
+    key: Literal[
+        "timer",
+        "message",
+        "state",
+        "actor",
+        "specification",
+        "asn1_entity",
+    ]
+    value: str
 
 class QueryUnderstandingResult(BaseModel):
     """Only information explicitly stated in the question."""
 
     intent: Intent = "general_technical_question"
-    entities: dict[str, str] = Field(default_factory=dict)
+   entities: list[ExtractedEntity] = Field(default_factory=list)
     keywords: list[str] = Field(default_factory=list)
 
 

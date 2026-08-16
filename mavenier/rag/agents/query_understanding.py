@@ -18,12 +18,16 @@ def query_understanding_node(state: RAGState) -> dict:
         system_prompt=QUERY_UNDERSTANDING_PROMPT,
         response_model=QueryUnderstandingResult,
     )
+    entities = {
+    entity.key: entity.value
+    for entity in result.entities
+}
     return node_update(
         state,
         "query_understanding",
         {
             "intent": result.intent,
-            "entities": result.entities,
+            "entities": entities,
             "keywords": result.keywords,
         },
         intent=result.intent,
