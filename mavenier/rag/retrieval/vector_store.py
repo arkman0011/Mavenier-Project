@@ -16,6 +16,12 @@ POINT_NAMESPACE = uuid.UUID("b55aa0da-c367-48fb-96ec-05a6b283c4b4")
 # These paths match the project's ACTUAL metadata schema. Friendly aliases on
 # the left let callers use the shorter conceptual names from the design prompt.
 FILTER_FIELD_ALIASES = {
+    # Primary, path-derived filters: reliable for every document and the main
+    # lever for scoping retrieval on a large multi-release corpus.
+    "release": "document_metadata.release",
+    "series": "document_metadata.series",
+    "spec_number": "document_metadata.spec_number",
+    "document_id": "document_metadata.document_id",
     "direction.direction": "direction_metadata.items[].direction",
     "direction.sender": "direction_metadata.items[].sender",
     "direction.receiver": "direction_metadata.items[].receiver",
@@ -58,49 +64,25 @@ def get_qdrant_client(path: str | Path = DEFAULT_QDRANT_PATH) -> Any:
         raise RuntimeError(f"Could not open Qdrant storage at {storage_path}: {exc}") from exc
 
 
-def _distance_name(value: Any) -> str:
-    raw = getattr(value, "value", value)
-    return str(raw).lower().split(".")[-1]
-
-
 def create_collection_if_needed(
     client: Any,
     collection_name: str = COLLECTION_NAME,
 ) -> bool:
-    """Create a 384/COSINE collection, or safely validate the existing one."""
+    """Create the 384/COSINE collection if it doesn't exist yet."""
     _, models = _qdrant_imports()
     try:
-        exists = client.collection_exists(collection_name)
-        if not exists:
-            client.create_collection(
-                collection_name=collection_name,
-                vectors_config=models.VectorParams(
-                    size=EMBEDDING_DIMENSION,
-                    distance=models.Distance.COSINE,
-                ),
-            )
-            return True
-
-        info = client.get_collection(collection_name)
-        vectors = info.config.params.vectors
-        if isinstance(vectors, dict):
-            raise RuntimeError(
-                f"Collection {collection_name!r} uses named vectors; this project "
-                "expects one unnamed vector."
-            )
-        size = getattr(vectors, "size", None)
-        distance = _distance_name(getattr(vectors, "distance", None))
-        if size != EMBEDDING_DIMENSION or distance != "cosine":
-            raise RuntimeError(
-                f"Collection {collection_name!r} is incompatible: expected "
-                f"size={EMBEDDING_DIMENSION}, distance=COSINE; got "
-                f"size={size}, distance={distance}. Existing data was not changed."
-            )
-        return False
-    except RuntimeError:
-        raise
+        if client.collection_exists(collection_name):
+            return False
+        client.create_collection(
+            collection_name=collection_name,
+            vectors_config=models.VectorParams(
+                size=EMBEDDING_DIMENSION,
+                distance=models.Distance.COSINE,
+            ),
+        )
+        return True
     except Exception as exc:
-        raise RuntimeError(f"Could not create/check Qdrant collection: {exc}") from exc
+        raise RuntimeError(f"Could not create Qdrant collection: {exc}") from exc
 
 
 def create_payload_indexes(
@@ -130,9 +112,12 @@ def stable_point_id(chunk: dict[str, Any]) -> str:
     if not isinstance(chunk_id, str) or not chunk_id.strip():
         raise ValueError("Every chunk needs a non-empty chunk_id.")
     document = chunk.get("document_metadata") or {}
+    # Every spec file in the corpus is named "raw.md", so the filename alone no
+    # longer identifies a document. The path-derived document_id keeps point ids
+    # unique across the whole corpus.
     identity = "|".join(
         (
-            str(document.get("filename") or "unknown-document"),
+            str(document.get("document_id") or document.get("filename") or "unknown-document"),
             str(document.get("source_file") or "unknown-source"),
             chunk_id,
         )
@@ -145,9 +130,11 @@ def build_payload(chunk: dict[str, Any]) -> dict[str, Any]:
     payload = copy.deepcopy(chunk)
     payload.setdefault("text", chunk_text(chunk))
     document = payload.get("document_metadata") or {}
+    # Prefer the spec identity (e.g. "TS 36.106") over the generic "raw.md"
+    # filename so cited sources are meaningful to a reader.
     payload.setdefault(
         "source",
-        document.get("source_file") or document.get("filename"),
+        document.get("document_id") or document.get("source_file") or document.get("filename"),
     )
     return payload
 
@@ -217,6 +204,47 @@ def build_filter(filters: dict[str, Any] | None) -> Any | None:
             match = models.MatchValue(value=value)
         conditions.append(models.FieldCondition(key=field_name, match=match))
     return models.Filter(must=conditions) if conditions else None
+
+
+def fetch_section_chunks(
+    client: Any,
+    document_id: str,
+    section: str,
+    collection_name: str = COLLECTION_NAME,
+    max_chunks: int = 400,
+) -> list[dict[str, Any]]:
+    """Return every chunk of one document section, in reading order.
+
+    This is the "big" half of small-to-big retrieval: given a small chunk that
+    matched, we pull all its siblings in the same section so the answer model
+    sees the whole passage instead of one fragment.
+    """
+    _, models = _qdrant_imports()
+    query_filter = models.Filter(
+        must=[
+            models.FieldCondition(
+                key="document_metadata.document_id",
+                match=models.MatchValue(value=document_id),
+            ),
+            models.FieldCondition(key="section", match=models.MatchValue(value=section)),
+        ]
+    )
+    try:
+        points, _ = client.scroll(
+            collection_name=collection_name,
+            scroll_filter=query_filter,
+            with_payload=True,
+            with_vectors=False,
+            limit=max_chunks,
+        )
+    except Exception as exc:
+        raise RuntimeError(f"Could not fetch section chunks: {exc}") from exc
+
+    payloads = [dict(point.payload or {}) for point in points]
+    # chunk_id is zero-padded per document (e.g. "38331-000123"), so a plain
+    # sort restores the original reading order within the section.
+    payloads.sort(key=lambda payload: str(payload.get("chunk_id") or ""))
+    return payloads
 
 
 def search_similar(

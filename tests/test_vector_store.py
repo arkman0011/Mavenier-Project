@@ -7,12 +7,16 @@ from mavenier.rag.retrieval.vector_store import build_payload, stable_point_id
 
 def sample_chunk():
     return {
-        "chunk_id": "chunk-000001",
+        "chunk_id": "36106-000001",
         "original_text": "The UE shall start T300.",
         "section": "RRC establishment",
         "document_metadata": {
-            "filename": "MD Combined.md",
+            "filename": "raw.md",
             "source_file": "raw.md",
+            "release": "Rel-11",
+            "series": "36",
+            "spec_number": "36106",
+            "document_id": "TS 36.106",
         },
         "direction_metadata": {"items": []},
         "state_metadata": {"items": []},

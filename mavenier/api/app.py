@@ -10,7 +10,6 @@ from typing import Annotated, Any
 from fastapi import Body, FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from mavenier.rag.ingestion.pipeline import process_markdown
 from mavenier.rag.pipeline import ask_agentic_rag
 from mavenier.rag.retrieval.pipeline import ingest_jsonl
 from mavenier.rag.retrieval.vector_store import COLLECTION_NAME, get_qdrant_client
@@ -25,7 +24,6 @@ FilterValue = FilterScalar | list[FilterScalar]
 
 # All paths are based on this file, so the command works from any terminal folder.
 PROJECT_FOLDER = Path(__file__).resolve().parents[2]
-INPUT_FILE = PROJECT_FOLDER / "input" / "MD Combined.md"
 CHUNK_FILE = PROJECT_FOLDER / "outputs" / "enriched_chunks.jsonl"
 QDRANT_FOLDER = PROJECT_FOLDER / "qdrant_data"
 
@@ -45,21 +43,16 @@ def collection_is_ready() -> bool:
 
 
 def prepare_knowledge_base() -> None:
-    """Create chunks and Qdrant data only when usable data is not present."""
+    """Load the prepared dataset into Qdrant if it is not already loaded.
+
+    The dataset (``outputs/enriched_chunks.jsonl``) ships as part of the repo,
+    built offline by ``scripts.build_dataset``. The API only ever ingests it.
+    """
     if collection_is_ready():
         LOGGER.info(
             "Qdrant collection %r is ready; ingestion skipped.", COLLECTION_NAME
         )
         return
-
-    if not CHUNK_FILE.is_file():
-        if not INPUT_FILE.is_file():
-            raise RuntimeError(
-                f"Input Markdown file not found: {INPUT_FILE}. "
-                "Place the file there and start the API again."
-            )
-        LOGGER.info("No chunk file found; processing %s", INPUT_FILE)
-        process_markdown(INPUT_FILE, CHUNK_FILE, max_tokens=400)
 
     LOGGER.info(
         "Preparing Qdrant collection %r. First startup may take time.", COLLECTION_NAME
@@ -100,6 +93,17 @@ class AskResponse(BaseModel):
     debug: dict[str, Any] | None = None
 
 
+@app.get("/")
+def service_information() -> dict[str, str]:
+    """Provide a useful landing response instead of an unexplained 404."""
+    return {
+        "name": "3GPP Telecom RAG API",
+        "status": "ok",
+        "documentation": "/docs",
+        "health": "/health",
+    }
+
+
 @app.get("/health")
 def health_check() -> dict[str, str]:
     """Confirm that the API process is running without loading AI models."""
@@ -136,7 +140,7 @@ def ask_question(
                 "question_without_filters": {
                     "summary": "Ask a normal question",
                     "value": {
-                        "question": "What is an RRC Connection?",
+                        "question": "What should the eNodeB do when an S1-AP path failure is detected?",
                         "filters": None,
                         "debug": False,
                     },

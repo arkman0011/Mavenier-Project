@@ -1,4 +1,4 @@
-from mavenier.rag.ingestion.loader import extract_markdown_headings, find_section_for_chunk, split_combined_markdown
+from mavenier.preprocessing.loader import extract_markdown_headings, find_section_for_chunk, split_combined_markdown
 
 
 def test_splits_source_file_markers():

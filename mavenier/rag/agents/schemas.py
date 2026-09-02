@@ -1,4 +1,4 @@
-"""Structured Gemini outputs for semantic decision nodes."""
+"""Structured Gemini outputs for the two judgment nodes."""
 
 from __future__ import annotations
 
@@ -18,47 +18,37 @@ Intent = Literal[
     "comparison",
     "general_technical_question",
 ]
-class ExtractedEntity(BaseModel):
-    """One entity explicitly found in the question."""
 
-    key: Literal[
-        "timer",
-        "message",
-        "state",
-        "actor",
-        "specification",
-        "asn1_entity",
-    ]
-    value: str
 
-class QueryUnderstandingResult(BaseModel):
-    """Only information explicitly stated in the question."""
+class QueryAnalysis(BaseModel):
+    """One structured read of the user's question.
 
+    Produces the semantic search query AND any metadata filters that are
+    *explicitly* present in the question. Filters left as None are simply not
+    applied, so a vague question searches the whole corpus rather than being
+    wrongly narrowed.
+    """
+
+    search_query: str
     intent: Intent = "general_technical_question"
-   entities: list[ExtractedEntity] = Field(default_factory=list)
     keywords: list[str] = Field(default_factory=list)
 
-
-class EvidenceCheckResult(BaseModel):
-    """Whether every meaningful question part is covered by evidence."""
-
-    status: Literal["SUFFICIENT", "INSUFFICIENT"]
-    reason: str
-    missing_information: list[str] = Field(default_factory=list)
-
-
-class VerifiedClaim(BaseModel):
-    """One factual answer claim and its evidence result."""
-
-    claim: str
-    supported: bool
-    source: str | None = None
-    section: str | None = None
+    # Metadata filters — only fill these when the question states them outright.
+    release: str | None = None          # e.g. "Rel-16"
+    series: str | None = None           # e.g. "38"
+    spec_number: str | None = None      # e.g. "38331"
+    timer: str | None = None            # e.g. "T300"
+    asn1_entity: str | None = None      # e.g. "RRCReconfiguration"
 
 
-class VerificationResult(BaseModel):
-    """Claim-level verification against the supplied context only."""
+class AnswerVerification(BaseModel):
+    """Whether the draft answer is supported by the chunks (text + metadata).
 
-    status: Literal["SUPPORTED", "UNSUPPORTED"]
-    claims: list[VerifiedClaim] = Field(default_factory=list)
-    unsupported_claims: list[str] = Field(default_factory=list)
+    The verifier sees the user question, the answer, and every used chunk's
+    text plus its structured metadata, so it can corroborate specific facts
+    (timers, states, messages, release/series) rather than guess from prose.
+    """
+
+    verdict: Literal["supported", "partially_supported", "unsupported"]
+    addresses_question: bool = True
+    issues: list[str] = Field(default_factory=list)

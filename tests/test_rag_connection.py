@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import mavenier.rag.retrieval.vector_store as vector_store
+import mavenier.rag.retrieval.pipeline as retrieval_pipeline
 from mavenier.rag.retrieval.embeddings import EMBEDDING_DIMENSION, embed_chunks
 from mavenier.rag.retrieval.vector_store import search_similar, store_chunks
 
@@ -102,3 +103,31 @@ def test_chunk_to_vector_to_storage_to_retrieval_preserves_metadata(monkeypatch)
     assert results[0]["metadata"] == original_metadata
     assert results[0]["payload"]["timer_metadata"] == chunk["timer_metadata"]
 
+
+def test_search_pipeline_closes_local_qdrant_client(monkeypatch):
+    class ClosableClient:
+        closed = False
+
+        def collection_exists(self, name):
+            return True
+
+        def close(self):
+            self.closed = True
+
+    client = ClosableClient()
+    monkeypatch.setattr(retrieval_pipeline, "load_tokenizer", lambda: object())
+    monkeypatch.setattr(retrieval_pipeline, "load_embedding_model", lambda: object())
+    monkeypatch.setattr(
+        retrieval_pipeline,
+        "embed_query",
+        lambda query, model, tokenizer: [1.0] + [0.0] * 383,
+    )
+    monkeypatch.setattr(retrieval_pipeline, "get_qdrant_client", lambda path: client)
+    monkeypatch.setattr(
+        retrieval_pipeline,
+        "search_similar",
+        lambda **kwargs: [{"text": "result"}],
+    )
+
+    assert retrieval_pipeline.search_text("RRC") == [{"text": "result"}]
+    assert client.closed is True

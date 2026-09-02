@@ -1,6 +1,6 @@
 import pytest
 
-from mavenier.rag.ingestion.pipeline import build_contextualized_text, validate_chunk
+from mavenier.preprocessing.pipeline import build_contextualized_text, validate_chunk
 
 
 def _empty_metadata():
@@ -16,13 +16,17 @@ def _empty_metadata():
 def test_context_has_real_newlines_and_does_not_change_original():
     original = "The UE shall start timer T300."
     context = build_contextualized_text(
-        "MD Combined.md",
+        "TS 36.106",
         "5.3 Connection control",
         ["5 RRC procedures", "5.3 Connection control"],
         original,
+        release="Rel-11",
+        series="36",
     )
     assert context == (
-        "Document: MD Combined.md\n"
+        "Document: TS 36.106\n"
+        "Release: Rel-11\n"
+        "Series: 36\n"
         "Section: 5.3 Connection control\n"
         "Section path: 5 RRC procedures > 5.3 Connection control\n\n"
         "The UE shall start timer T300."

@@ -1,4 +1,4 @@
-from mavenier.rag.ingestion.metadata_extractor import (
+from mavenier.preprocessing.metadata_extractor import (
     extract_asn1_metadata,
     extract_direction_metadata,
     extract_requirement_metadata,

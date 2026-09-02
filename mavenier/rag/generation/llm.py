@@ -7,94 +7,34 @@ import os
 from pathlib import Path
 from typing import Any
 
-GEMINI_MODEL = "gemini-3.5-flash"
+from mavenier.rag.generation.prompts import ANSWER_SYSTEM_PROMPT
+
+DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite"
 GEMINI_TEMPERATURE = 0.1
 GEMINI_MAX_OUTPUT_TOKENS = 1024
 NO_CONTEXT_MESSAGE = "No relevant context was retrieved from the knowledge base."
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_ENV_PATH = PROJECT_ROOT / ".env"
+LEGACY_ENV_PATH = Path(__file__).resolve().parent / ".env"
 
-SYSTEM_PROMPT = """You are a precise technical assistant for a Retrieval-Augmented Generation system built over 3GPP telecommunications specifications and technical documents.
+# ``GEMENI_API_KEY`` is accepted for compatibility with early copies of this
+# project that shipped with that misspelling. New configuration must use the
+# standard ``GEMINI_API_KEY`` name.
+API_KEY_ENV_NAMES = ("GEMINI_API_KEY", "GEMENI_API_KEY")
+API_KEY_PLACEHOLDERS = {
+    "your_api_key_here",
+    "your_gemini_api_key",
+    "replace_with_your_api_key",
+}
 
-Your job is to answer the user's question using ONLY the retrieved context supplied to you.
 
-GROUNDING RULES
+class GeminiRateLimitError(RuntimeError):
+    """Raised when Gemini reports exhausted request, token, or spend quota."""
 
-1. Treat the retrieved context as the authoritative source for the answer.
 
-2. Do not answer from your own general knowledge when the retrieved context does not support the answer.
-
-3. Never invent:
-   - procedures,
-   - timers,
-   - states,
-   - message names,
-   - ASN.1 fields,
-   - requirements,
-   - specifications,
-   - section numbers,
-   - source names,
-   - protocol behaviour,
-   - UE behaviour,
-   - network behaviour.
-
-4. If the retrieved context does not contain enough information to answer the question, clearly say:
-   "The retrieved context does not contain enough information to answer this question."
-
-5. Do not try to fill missing information from memory.
-
-6. Preserve official 3GPP terminology whenever possible.
-
-7. Distinguish carefully between related telecom concepts. Do not treat two terms as equivalent unless the retrieved context supports that relationship.
-
-8. When the question asks what something "is", prioritize a direct definition from the context.
-
-9. When the question asks what "happens", prioritize procedural or requirement text describing actions, conditions, transitions, or consequences.
-
-10. When the question refers to a specific timer, message, state, ASN.1 element, requirement, protocol entity, or specification, prioritize passages that explicitly mention that entity.
-
-11. Prefer directly answering evidence over broadly related background information.
-
-12. Do not mention unrelated retrieved passages merely because they were supplied.
-
-13. If retrieved passages conflict, do not silently choose one. Explain that the supplied context contains conflicting information and identify the relevant sources or sections.
-
-14. Base citations only on source and section information supplied with the retrieved context. Never invent a citation.
-
-ANSWER STYLE
-
-- Start with a direct answer.
-- Be technically precise.
-- Keep the answer concise unless the question requires explanation.
-- Use bullets only when they improve clarity.
-- Preserve telecom abbreviations such as UE, UTRAN, RRC, RNC, RNS, ASN.1, NAS, RLC and similar terms when used by the source.
-- Explain an abbreviation only when useful.
-- Do not add generic introductions or conclusions.
-- Do not discuss the retrieval pipeline unless the user asks about it.
-
-SOURCE RULE
-
-At the end of the answer, include the supporting source information when available.
-
-Use this format:
-
-Source: <source>
-Section: <section>
-
-If more than one retrieved passage materially supports the answer, include only the relevant supporting sources.
-
-If source or section information was not provided, do not invent it.
-
-FINAL SELF-CHECK BEFORE ANSWERING
-
-Before producing the final answer, silently verify:
-
-- Is every important technical claim supported by the retrieved context?
-- Did I answer the actual question rather than merely discuss related concepts?
-- Did I avoid unsupported external knowledge?
-- Did I preserve important 3GPP terminology?
-- Did I avoid inventing source information?
-- If the context was insufficient, did I explicitly say so?
-
-If any technical claim is unsupported, remove it."""
+def configured_gemini_model() -> str:
+    """Return the configured model, defaulting to the lower-cost Flash-Lite."""
+    return os.getenv("GEMINI_MODEL", "").strip() or DEFAULT_GEMINI_MODEL
 
 METADATA_LABELS = {
     "direction_metadata": "direction",
@@ -164,7 +104,7 @@ def build_rag_prompt(
 
 
 def load_gemini_client(env_path: str | Path | None = None) -> Any:
-    """Load GEMINI_API_KEY from the environment or a local .env file."""
+    """Load the Gemini client from process state or the project-root .env."""
     try:
         from dotenv import load_dotenv
         from google import genai
@@ -173,38 +113,35 @@ def load_gemini_client(env_path: str | Path | None = None) -> Any:
             "Gemini packages are missing. Install requirements.txt."
         ) from exc
 
-    dotenv_path = (
-        Path(env_path) if env_path else Path(__file__).resolve().parent / ".env"
+    dotenv_paths = (
+        [Path(env_path).expanduser().resolve()]
+        if env_path is not None
+        else [DEFAULT_ENV_PATH, LEGACY_ENV_PATH]
     )
-    load_dotenv(dotenv_path=dotenv_path, override=False)
-    api_key = os.getenv("GEMINI_API_KEY", "").strip()
-    if not api_key or api_key == "your_api_key_here":
+    for dotenv_path in dotenv_paths:
+        if dotenv_path.is_file():
+            load_dotenv(dotenv_path=dotenv_path, override=False)
+
+    api_key = ""
+    for variable_name in API_KEY_ENV_NAMES:
+        candidate = os.getenv(variable_name, "").strip()
+        if candidate:
+            api_key = candidate
+            break
+
+    if not api_key or api_key.casefold() in API_KEY_PLACEHOLDERS:
         raise RuntimeError(
-            "GEMINI_API_KEY is missing. Copy .env.example to .env and add your key."
+            "GEMINI_API_KEY is missing. Copy .env.example to .env in the "
+            "project root and add a valid key."
         )
     return genai.Client(api_key=api_key)
-
-
-def _generation_config() -> Any:
-    """Build a conservative text-only configuration with no external tools."""
-    try:
-        from google.genai import types
-    except ImportError as exc:
-        raise RuntimeError(
-            "google-genai is missing. Install requirements.txt."
-        ) from exc
-    return types.GenerateContentConfig(
-        system_instruction=SYSTEM_PROMPT,
-        temperature=GEMINI_TEMPERATURE,
-        max_output_tokens=GEMINI_MAX_OUTPUT_TOKENS,
-    )
 
 
 def _raise_gemini_error(exc: Exception) -> None:
     """Translate provider failures without confusing them with weak evidence."""
     message = str(exc).lower()
     if "429" in message or "rate" in message or "quota" in message:
-        raise RuntimeError(
+        raise GeminiRateLimitError(
             "Gemini rate limit or quota was reached. Wait and try again."
         ) from exc
     if "401" in message or "403" in message or "api key" in message:
@@ -216,14 +153,18 @@ def _raise_gemini_error(exc: Exception) -> None:
     ) from exc
 
 
-def generate_with_system_prompt(
+def _call_gemini(
     prompt: str,
     system_prompt: str,
+    temperature: float,
     client: Any | None = None,
-) -> str:
-    """Run one grounded text request for a specialized graph node."""
-    if not isinstance(prompt, str) or not prompt.strip():
-        raise ValueError("Gemini prompt cannot be empty.")
+    response_model: type[Any] | None = None,
+) -> Any:
+    """Send one request to Gemini and return the raw SDK response.
+
+    Shared by every public generate_* function below so the request config,
+    the client lookup, and error translation live in exactly one place.
+    """
     try:
         from google.genai import types
     except ImportError as exc:
@@ -234,18 +175,33 @@ def generate_with_system_prompt(
     client = client or load_gemini_client()
     config = types.GenerateContentConfig(
         system_instruction=system_prompt,
-        temperature=GEMINI_TEMPERATURE,
+        temperature=temperature,
         max_output_tokens=GEMINI_MAX_OUTPUT_TOKENS,
+        **(
+            {"response_mime_type": "application/json", "response_schema": response_model}
+            if response_model is not None
+            else {}
+        ),
     )
     try:
-        response = client.models.generate_content(
-            model=GEMINI_MODEL,
+        return client.models.generate_content(
+            model=configured_gemini_model(),
             contents=prompt.strip(),
             config=config,
         )
     except Exception as exc:
         _raise_gemini_error(exc)
 
+
+def generate_with_system_prompt(
+    prompt: str,
+    system_prompt: str,
+    client: Any | None = None,
+) -> str:
+    """Run one grounded text request for a specialized graph node."""
+    if not isinstance(prompt, str) or not prompt.strip():
+        raise ValueError("Gemini prompt cannot be empty.")
+    response = _call_gemini(prompt, system_prompt, GEMINI_TEMPERATURE, client)
     answer = getattr(response, "text", None)
     if not isinstance(answer, str) or not answer.strip():
         raise RuntimeError("Gemini returned no answer text.")
@@ -261,44 +217,17 @@ def generate_structured(
     """Request and validate a simple Pydantic result instead of parsing prose."""
     if not isinstance(prompt, str) or not prompt.strip():
         raise ValueError("Gemini structured prompt cannot be empty.")
-    try:
-        from google.genai import types
-    except ImportError as exc:
-        raise RuntimeError(
-            "google-genai is missing. Install requirements.txt."
-        ) from exc
-
-    client = client or load_gemini_client()
-    config = types.GenerateContentConfig(
-        system_instruction=system_prompt,
-        temperature=0.0,
-        max_output_tokens=GEMINI_MAX_OUTPUT_TOKENS,
-        response_mime_type="application/json",
-        response_schema=response_model,
-    )
-    try:
-        response = client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=prompt.strip(),
-            config=config,
-        )
-    except Exception as exc:
-        _raise_gemini_error(exc)
+    response = _call_gemini(prompt, system_prompt, 0.0, client, response_model)
 
     parsed = getattr(response, "parsed", None)
+    if isinstance(parsed, response_model):
+        return parsed
     try:
-        if isinstance(parsed, response_model):
-            return parsed
-        if isinstance(parsed, dict):
-            return response_model.model_validate(parsed)
-        text = getattr(response, "text", None)
-        if isinstance(text, str) and text.strip():
-            return response_model.model_validate_json(text)
+        return response_model.model_validate(parsed)
     except Exception as exc:
         raise RuntimeError(
             f"Gemini returned invalid {response_model.__name__} output."
         ) from exc
-    raise RuntimeError(f"Gemini returned no {response_model.__name__} output.")
 
 
 def generate_answer(
@@ -313,16 +242,7 @@ def generate_answer(
         return NO_CONTEXT_MESSAGE
 
     prompt = build_rag_prompt(query, reranked_results)
-    client = client or load_gemini_client()
-    try:
-        response = client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=prompt,
-            config=_generation_config(),
-        )
-    except Exception as exc:
-        _raise_gemini_error(exc)
-
+    response = _call_gemini(prompt, ANSWER_SYSTEM_PROMPT, GEMINI_TEMPERATURE, client)
     answer = getattr(response, "text", None)
     if not isinstance(answer, str) or not answer.strip():
         raise RuntimeError("Gemini returned no answer text.")

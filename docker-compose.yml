@@ -1,0 +1,23 @@
+services:
+  # One-shot: embed outputs/enriched_chunks.jsonl (already built and part of
+  # the repo) and store it in the shared qdrant_data volume.
+  ingest:
+    build: .
+    env_file: .env
+    volumes:
+      - qdrant_data:/app/qdrant_data
+    command: python -m scripts.run_ingestion
+
+  api:
+    build: .
+    env_file: .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - qdrant_data:/app/qdrant_data
+    depends_on:
+      ingest:
+        condition: service_completed_successfully
+
+volumes:
+  qdrant_data:

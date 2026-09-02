@@ -1,7 +1,15 @@
 .env
-venv/
 .venv/
+.idea/
 __pycache__/
-*.pyc
+*.py[cod]
 .pytest_cache/
+.pytest-tmp/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 qdrant_data/
+*.log
+.DS_Store
+__MACOSX/

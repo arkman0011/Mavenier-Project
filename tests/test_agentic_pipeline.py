@@ -1,45 +1,44 @@
 import mavenier.rag.pipeline as pipeline
 
 
-def test_public_pipeline_initializes_limits_and_returns_safe_debug(
-    monkeypatch, tmp_path
-):
+def test_public_pipeline_passes_clean_state_and_returns_safe_debug(monkeypatch, tmp_path):
     received = {}
 
     class FakeGraph:
-        def invoke(self, state, config):
-            received.update(state=state, config=config)
+        def invoke(self, state):
+            received.update(state=state)
             return {
                 **state,
                 "intent": "definition",
-                "entities": {},
                 "keywords": ["RRC"],
                 "search_query": "What is RRC?",
                 "filters": {},
-                "evidence_status": "SUFFICIENT",
-                "verification_status": "SUPPORTED",
-                "unsupported_claims": [],
+                "filters_used": {},
+                "filters_relaxed": False,
+                "retrieval_confident": True,
+                "top_rerank_score": 8.6,
+                "verification_verdict": "supported",
+                "verification_issues": [],
                 "trace": [{"stage": "finalizer", "confidence": 0.9}],
                 "final_answer": "Grounded answer",
                 "confidence": 0.9,
-                "sources": [{"source": "38.331.md", "section": "Definitions"}],
+                "sources": [{"source": "TS 38.331", "section": "Definitions"}],
             }
 
     monkeypatch.setattr(pipeline, "graph", FakeGraph())
     result = pipeline.ask_agentic_rag(
         "  What is RRC?  ",
         qdrant_path=tmp_path,
-        filters={"section": "Definitions"},
+        filters={"release": "Rel-16"},
         debug=True,
     )
 
     assert received["state"]["question"] == "What is RRC?"
-    assert received["state"]["max_retries"] == 2
-    assert received["state"]["max_answer_retries"] == 1
-    assert received["state"]["requested_filters"] == {"section": "Definitions"}
-    assert received["config"] == {"recursion_limit": 25}
+    assert received["state"]["requested_filters"] == {"release": "Rel-16"}
+    assert "retry_count" not in received["state"]
     assert result["answer"] == "Grounded answer"
     assert result["confidence"] == 0.9
+    assert result["debug"]["search_query"] == "What is RRC?"
     assert "embeddings" not in result["debug"]
 
 

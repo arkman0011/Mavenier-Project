@@ -47,7 +47,7 @@ def load_embedding_model() -> Any:
     try:
         model = SentenceTransformer(MODEL_NAME, device=DEVICE)
         model.max_seq_length = MAX_SEQUENCE_LENGTH
-        dimension = model.get_sentence_embedding_dimension()
+        dimension = model.get_embedding_dimension()
     except Exception as exc:
         raise RuntimeError(f"Could not load embedding model {MODEL_NAME}: {exc}") from exc
 
@@ -179,4 +179,3 @@ def embed_query(
         raise ValueError("Search query cannot be empty.")
     instructed_query = QUERY_INSTRUCTION + query.strip()
     return embed_text(instructed_query, model=model, tokenizer=tokenizer)
-

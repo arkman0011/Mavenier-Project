@@ -51,7 +51,7 @@ Use `POST /ask` from `http://127.0.0.1:8000/docs`:
 
 ```json
 {
-  "question": "What is an RRC Connection?",
+  "question": "What should the eNodeB do when an S1-AP path failure is detected?",
   "filters": null,
   "debug": false
 }

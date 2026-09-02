@@ -1,44 +1,58 @@
-"""Readable prompts for the LangGraph nodes that require Gemini."""
+"""Prompt for the query-analysis LLM node."""
 
-QUERY_UNDERSTANDING_PROMPT = """You analyze user questions for a 3GPP retrieval system.
+QUERY_ANALYSIS_PROMPT = """You analyze a user's question for a 3GPP telecom retrieval system.
 
-Extract only information explicitly present in the question. Do not answer the
-question. Do not invent timers, releases, messages, states, actors, protocol
-entities, or specifications. Use short entity keys such as timer, message,
-state, actor, specification, or asn1_entity. Return structured data only.
+You do TWO things and return them as structured data:
+
+1. search_query: a clean, keyword-rich version of the question, good for
+   semantic search. Keep the telecom terms; drop filler words. Do not answer
+   the question.
+
+2. Metadata filters: fill a field ONLY when the question states it explicitly.
+   Leave it null when it is not clearly present. Never guess — a wrong filter
+   hides the right document.
+
+   - release: the 3GPP release, formatted "Rel-XX" (e.g. "Rel-16"). Only if the
+     question names a release or "release 16" style wording.
+   - series: the two-digit spec series (e.g. "38" for NR radio, "23" for
+     architecture, "24" for NAS). Only if clearly implied by a named spec or
+     stated directly.
+   - spec_number: a specific spec as digits without the dot (e.g. "38331" for
+     TS 38.331). Only if the question names the spec.
+   - timer: a 3GPP timer name like "T300" or "T3512". Only if named.
+   - asn1_entity: an ASN.1 element name (e.g. "RRCReconfiguration"). Only for
+     ASN.1 / message-structure questions that name it.
+
+Also classify intent and list the key search keywords.
+
+Extract only what is explicitly in the question. Return structured data only.
 """
 
-EVIDENCE_CHECKER_PROMPT = """You are an evidence sufficiency checker for a 3GPP RAG system.
+ANSWER_VERIFIER_PROMPT = """You verify a draft answer for a 3GPP RAG system, using ONLY the supplied
+evidence — never outside telecom knowledge.
 
-You are not answering the user's question. Decide only whether the supplied
-passages contain enough explicit evidence to answer every meaningful part.
+You receive the user's question, the draft answer, and the evidence chunks used
+to write it. Each chunk includes its text AND structured metadata: the source
+spec, section, release/series, and any extracted timers, states, messages,
+ASN.1 entities, and requirements. Use that metadata as corroboration — for
+example, if the answer mentions timer T300, a chunk whose timer metadata lists
+T300 supports that claim.
 
-Rules:
-1. Use only the supplied passages; never use telecom knowledge from memory.
-2. Related text is not enough. The requested definition, procedure, timer,
-   state, message, requirement, ASN.1 information, or specification must be
-   explicitly supported.
-3. If any essential part is unsupported, return INSUFFICIENT.
-4. If passages materially conflict, return INSUFFICIENT and explain why.
-5. Return SUFFICIENT only when a grounded answer needs no guessing.
-6. Return structured data only.
-"""
+Decide two things:
 
-FACT_VERIFIER_PROMPT = """You are a strict claim verifier for a 3GPP RAG system.
+1. verdict:
+   - "supported": every factual claim is backed by the evidence text or its
+     metadata. Paraphrase, summarising, and reasonably combining stated facts
+     are all fine.
+   - "partially_supported": mostly grounded, but a minor claim or two is not
+     backed by the evidence.
+   - "unsupported": a key claim is contradicted by, or entirely absent from,
+     the evidence.
 
-Compare every factual statement in the draft answer against the supplied
-evidence. Use only that evidence, never your own telecom knowledge. A claim is
-SUPPORTED only when the evidence directly supports it. Added explanations,
-inferred causes, invented procedures, timer behavior, states, or message
-behavior are UNSUPPORTED. Source and section values must come only from the
-supplied evidence. Return structured verification results only.
-"""
+2. addresses_question: does the answer actually respond to the user's question?
 
-ANSWER_REGENERATION_PROMPT = """You rewrite a 3GPP RAG answer after strict verification.
-
-Use only the supplied retrieved context. Remove every unsupported claim listed
-in the request. Do not replace removed claims with guesses or outside telecom
-knowledge. Preserve valid 3GPP terminology and include only citations present
-in the context. If no supported answer remains, state that the evidence is not
-enough to answer reliably.
+Be fair, not pedantic: do NOT flag correct paraphrase, wording differences, or
+reasonable summarisation. Only flag claims that the evidence does not support or
+that it contradicts. List concrete problems in `issues`; leave it empty when the
+answer is supported. Return structured data only.
 """

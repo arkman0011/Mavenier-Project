@@ -1,41 +1,57 @@
-"""Node 7 and regeneration node: grounded Gemini answer production."""
+"""Stage 5a: draft a grounded answer from the expanded section context."""
 
 from __future__ import annotations
 
-import json
-
 from mavenier.rag.agents.common import node_update
-from mavenier.rag.agents.prompts import ANSWER_REGENERATION_PROMPT
-from mavenier.rag.generation.llm import generate_answer, generate_with_system_prompt
+from typing import Any
+
+from mavenier.rag.generation.llm import GeminiRateLimitError, generate_answer
 from mavenier.rag.graph.state import RAGState
 
 
+MAX_EXCERPT_CHARACTERS = 700
+
+
+def build_extractive_answer(chunks: list[dict[str, Any]]) -> str:
+    """Return source text directly when no generative quota is available."""
+    if not chunks:
+        return "No relevant context was retrieved from the knowledge base."
+
+    lines = [
+        "Gemini quota is unavailable, so the most relevant retrieved evidence is shown directly:",
+    ]
+    for rank, chunk in enumerate(chunks[:3], start=1):
+        text = " ".join(str(chunk.get("text") or "").split())
+        if len(text) > MAX_EXCERPT_CHARACTERS:
+            text = text[:MAX_EXCERPT_CHARACTERS].rsplit(" ", 1)[0] + "…"
+        source = str(chunk.get("source") or "Unknown source")
+        section = chunk.get("section")
+        label = f"[{rank}] {source}"
+        if section:
+            label += f", section {section}"
+        lines.extend(("", label, text))
+    return "\n".join(lines)
+
+
 def answer_generator_node(state: RAGState) -> dict:
-    answer = generate_answer(state["question"], state.get("reranked_chunks", []))
+    chunks = state.get("expanded_chunks", [])
+    gemini_available = state.get("gemini_available", True)
+    mode = "gemini"
+    if gemini_available:
+        try:
+            answer = generate_answer(state["question"], chunks)
+        except GeminiRateLimitError:
+            gemini_available = False
+            mode = "extractive_quota_fallback"
+            answer = build_extractive_answer(chunks)
+    else:
+        mode = "extractive_quota_fallback"
+        answer = build_extractive_answer(chunks)
     return node_update(
         state,
         "answer_generator",
-        {"draft_created": bool(answer)},
+        {"draft_created": bool(answer), "mode": mode},
         draft_answer=answer,
-    )
-
-
-def answer_regenerator_node(state: RAGState) -> dict:
-    retry_count = state.get("answer_retry_count", 0) + 1
-    prompt = "\n\n".join(
-        (
-            "QUESTION:\n" + state["question"],
-            "CURRENT DRAFT:\n" + state.get("draft_answer", ""),
-            "UNSUPPORTED CLAIMS:\n"
-            + json.dumps(state.get("unsupported_claims", []), ensure_ascii=False),
-            "RETRIEVED CONTEXT:\n" + state["context"],
-        )
-    )
-    answer = generate_with_system_prompt(prompt, ANSWER_REGENERATION_PROMPT)
-    return node_update(
-        state,
-        "answer_regenerator",
-        {"answer_retry_count": retry_count},
-        draft_answer=answer,
-        answer_retry_count=retry_count,
+        answer_mode=mode,
+        gemini_available=gemini_available,
     )

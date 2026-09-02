@@ -2,195 +2,102 @@ from __future__ import annotations
 
 from collections import Counter
 
-from mavenier.rag.graph.agentic_rag_graph import build_agentic_rag_graph
+from mavenier.rag.graph.agentic_rag_graph import PIPELINE, build_agentic_rag_graph
 
 
-def _node_set(
-    *,
-    evidence_statuses: list[str],
-    verification_statuses: list[str] | None = None,
-) -> tuple[dict, Counter]:
+def _node_set(*, reranked: list | None = None, verdict: str = "supported"):
+    """Fake every node so we test the wiring, not the models."""
     calls: Counter = Counter()
-    verification_statuses = verification_statuses or ["SUPPORTED"]
+    reranked = [
+        {"text": "An RRC Connection is a point-to-point connection.", "source": "TS 38.331", "section": "Definitions"}
+    ] if reranked is None else reranked
 
-    def understand(state):
-        calls["query_understanding"] += 1
-        return {"intent": "definition", "entities": {}, "keywords": ["RRC"]}
+    def query_analysis(state):
+        calls["query_analysis"] += 1
+        return {"intent": "definition", "keywords": ["RRC"], "search_query": state["question"], "filters": {}}
 
-    def plan(state):
-        calls["search_planner"] += 1
-        return {"search_query": state["question"], "filters": {}}
-
-    def retrieve(state):
+    def retriever(state):
         calls["retriever"] += 1
-        return {
-            "retrieved_chunks": [
-                {
-                    "text": "An RRC Connection is a point-to-point connection.",
-                    "source": "38.331.md",
-                    "section": "Definitions",
-                    "score": 0.9,
-                    "metadata": {},
-                    "payload": {"chunk_id": "chunk-1"},
-                }
-            ]
-        }
+        return {"retrieved_chunks": reranked, "filters_used": {}, "filters_relaxed": False}
 
-    def rerank(state):
+    def reranker(state):
         calls["reranker"] += 1
-        result = dict(state["retrieved_chunks"][0])
-        result.update(vector_score=0.9, rerank_score=4.0)
-        return {"reranked_chunks": [result]}
+        return {"reranked_chunks": reranked, "retrieval_confident": bool(reranked)}
 
-    def check_evidence(state):
-        index = min(calls["evidence_checker"], len(evidence_statuses) - 1)
-        status = evidence_statuses[index]
-        calls["evidence_checker"] += 1
+    def context_expander(state):
+        calls["context_expander"] += 1
         return {
-            "evidence_status": status,
-            "evidence_reason": "Enough direct evidence"
-            if status == "SUFFICIENT"
-            else "Missing definition",
-            "missing_information": [] if status == "SUFFICIENT" else ["definition"],
+            "context": "[CONTEXT 1]",
+            "context_sources": [{"source": "TS 38.331", "section": "Definitions"}],
+            "expanded_chunks": reranked,
         }
 
-    def refine(state):
-        calls["query_refinement"] += 1
-        return {
-            "retry_count": state["retry_count"] + 1,
-            "search_query": f"{state['question']} RRC",
-            "filters": {},
-        }
-
-    def build_context(state):
-        calls["context_builder"] += 1
-        return {"context": "[CONTEXT 1]\nSource: 38.331.md\nSection: Definitions"}
-
-    def generate(state):
+    def answer_generator(state):
         calls["answer_generator"] += 1
         return {"draft_answer": "RRC definition."}
 
-    def verify(state):
-        index = min(calls["fact_verifier"], len(verification_statuses) - 1)
-        status = verification_statuses[index]
-        calls["fact_verifier"] += 1
-        return {
-            "verification_status": status,
-            "unsupported_claims": []
-            if status == "SUPPORTED"
-            else ["Unsupported sentence"],
-            "verified_claims": [],
-        }
+    def answer_verifier(state):
+        calls["answer_verifier"] += 1
+        return {"verification_verdict": verdict, "addresses_question": True, "verification_issues": []}
 
-    def regenerate(state):
-        calls["answer_regenerator"] += 1
-        return {
-            "draft_answer": "RRC definition without unsupported sentence.",
-            "answer_retry_count": state["answer_retry_count"] + 1,
-        }
-
-    def finalize(state):
+    def finalizer(state):
         calls["finalizer"] += 1
-        supported = state.get("verification_status") == "SUPPORTED"
+        if not state.get("retrieval_confident"):
+            return {"final_answer": "insufficient", "confidence": 0.0, "sources": []}
+        if state.get("verification_verdict") == "unsupported":
+            return {"final_answer": "unsupported", "confidence": 0.3, "sources": []}
         return {
-            "final_answer": state["draft_answer"]
-            if supported
-            else "Safe verification refusal.",
-            "confidence": 0.9 if supported else 0.4,
-            "sources": [{"source": "38.331.md", "section": "Definitions"}]
-            if supported
-            else [],
+            "final_answer": state["draft_answer"],
+            "confidence": 0.9,
+            "sources": state.get("context_sources", []),
         }
 
-    def insufficient(state):
-        calls["insufficient_answer"] += 1
-        return {
-            "final_answer": "The retrieved documents do not contain enough reliable evidence to answer this question.",
-            "confidence": 0.0,
-            "sources": [],
-        }
-
-    def safe_finalize(state):
-        calls["safe_finalizer"] += 1
-        return {
-            "final_answer": "Safe verification refusal.",
-            "confidence": 0.4,
-            "sources": [],
-        }
-
-    return {
-        "query_understanding": understand,
-        "search_planner": plan,
-        "retriever": retrieve,
-        "reranker": rerank,
-        "evidence_checker": check_evidence,
-        "query_refinement": refine,
-        "context_builder": build_context,
-        "answer_generator": generate,
-        "fact_verifier": verify,
-        "answer_regenerator": regenerate,
-        "finalizer": finalize,
-        "safe_finalizer": safe_finalize,
-        "insufficient_answer": insufficient,
-    }, calls
+    nodes = {
+        "query_analysis": query_analysis,
+        "retriever": retriever,
+        "reranker": reranker,
+        "context_expander": context_expander,
+        "answer_generator": answer_generator,
+        "answer_verifier": answer_verifier,
+        "finalizer": finalizer,
+    }
+    return nodes, calls
 
 
 def _initial_state() -> dict:
-    return {
-        "question": "What is an RRC Connection?",
-        "retry_count": 0,
-        "max_retries": 2,
-        "answer_retry_count": 0,
-        "max_answer_retries": 1,
-        "debug": False,
-        "trace": [],
-    }
+    return {"question": "What is an RRC Connection?", "qdrant_path": "/tmp/q", "debug": False, "trace": []}
 
 
-def test_sufficient_evidence_reaches_verified_final_answer():
-    nodes, calls = _node_set(evidence_statuses=["SUFFICIENT"])
+def test_pipeline_runs_every_stage_once_in_order():
+    nodes, calls = _node_set()
     result = build_agentic_rag_graph(nodes).invoke(_initial_state())
 
     assert result["final_answer"] == "RRC definition."
     assert result["confidence"] == 0.9
-    assert calls["retriever"] == 1
-    assert calls["query_refinement"] == 0
-    assert calls["answer_regenerator"] == 0
+    for stage in PIPELINE:
+        assert calls[stage] == 1
 
 
-def test_insufficient_evidence_stops_after_two_refinements_without_generation():
-    nodes, calls = _node_set(evidence_statuses=["INSUFFICIENT"])
+def test_low_confidence_retrieval_abstains_without_calling_any_llm():
+    nodes, calls = _node_set()
+
+    def weak_reranker(state):
+        calls["reranker"] += 1
+        return {"reranked_chunks": [{"text": "loosely related"}], "retrieval_confident": False}
+
+    nodes["reranker"] = weak_reranker
     result = build_agentic_rag_graph(nodes).invoke(_initial_state())
 
     assert result["confidence"] == 0.0
-    assert "not contain enough reliable evidence" in result["final_answer"]
-    assert result["retry_count"] == 2
-    assert calls["retriever"] == 3
-    assert calls["query_refinement"] == 2
+    # the abstain gate skipped expansion, answering, AND verification
+    assert calls["context_expander"] == 0
     assert calls["answer_generator"] == 0
+    assert calls["answer_verifier"] == 0
 
 
-def test_unsupported_answer_is_regenerated_once_and_verified_again():
-    nodes, calls = _node_set(
-        evidence_statuses=["SUFFICIENT"],
-        verification_statuses=["UNSUPPORTED", "SUPPORTED"],
-    )
+def test_unsupported_verdict_reaches_finalizer_as_a_refusal():
+    nodes, calls = _node_set(verdict="unsupported")
     result = build_agentic_rag_graph(nodes).invoke(_initial_state())
 
-    assert result["final_answer"] == "RRC definition without unsupported sentence."
-    assert result["answer_retry_count"] == 1
-    assert calls["answer_regenerator"] == 1
-    assert calls["fact_verifier"] == 2
-
-
-def test_unsupported_answer_never_regenerates_more_than_once():
-    nodes, calls = _node_set(
-        evidence_statuses=["SUFFICIENT"],
-        verification_statuses=["UNSUPPORTED"],
-    )
-    result = build_agentic_rag_graph(nodes).invoke(_initial_state())
-
-    assert result["final_answer"] == "Safe verification refusal."
-    assert result["answer_retry_count"] == 1
-    assert calls["answer_regenerator"] == 1
-    assert calls["fact_verifier"] == 2
+    assert result["confidence"] == 0.3
+    assert calls["answer_verifier"] == 1

@@ -6,3 +6,10 @@ __pycache__
 .venv
 venv
 .pytest_cache
+.pytest-tmp
+.idea
+.mypy_cache
+.ruff_cache
+qdrant_data
+__MACOSX
+.DS_Store
